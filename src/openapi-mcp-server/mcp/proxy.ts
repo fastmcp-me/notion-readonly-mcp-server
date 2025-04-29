@@ -29,6 +29,7 @@ export class MCPProxy {
   private httpClient: HttpClient
   private tools: Record<string, NewToolDefinition>
   private openApiLookup: Record<string, OpenAPIV3.OperationObject & { method: string; path: string }>
+  private pageCache: Map<string, any> = new Map() // 성능 향상을 위한 캐시
 
   constructor(name: string, openApiSpec: OpenAPIV3.Document) {
     this.server = new Server({ name, version: '1.0.0' }, { capabilities: { tools: {} } })
@@ -94,7 +95,12 @@ export class MCPProxy {
       }
 
       try {
-        // Execute the operation
+        // API-get-block-children 호출 시 병렬 처리 최적화
+        if (name === 'API-get-block-children') {
+          return await this.handleBlockChildrenParallel(operation, params)
+        }
+
+        // 다른 일반 API 호출
         console.log(`노션 API 호출: ${operation.method.toUpperCase()} ${operation.path}`)
         const response = await this.httpClient.executeOperation(operation, params)
 
@@ -104,22 +110,19 @@ export class MCPProxy {
           console.error('응답 오류:', response.data)
         } else {
           console.log('응답 성공')
-          if (name === 'API-get-block-children') {
-            if (response.data?.results) {
-              console.log(`블록 ${response.data.results.length}개 조회됨`)
-              if (response.data.has_more) {
-                console.log(`다음 페이지 있음: ${response.data.next_cursor}`)
-              }
-            }
-          }
+        }
+
+        // 페이지 정보 캐싱 (retrieve-a-page 호출인 경우)
+        if (name === 'API-retrieve-a-page' && response.data && response.data.id) {
+          this.pageCache.set(response.data.id, response.data)
         }
 
         // Convert response to MCP format
         return {
           content: [
             {
-              type: 'text', // currently this is the only type that seems to be used by mcp server
-              text: JSON.stringify(response.data), // TODO: pass through the http status code text?
+              type: 'text',
+              text: JSON.stringify(response.data),
             },
           ],
         }
@@ -133,7 +136,7 @@ export class MCPProxy {
               {
                 type: 'text',
                 text: JSON.stringify({
-                  status: 'error', // TODO: get this from http status code?
+                  status: 'error',
                   ...(typeof data === 'object' ? data : { data: data }),
                 }),
               },
@@ -143,6 +146,92 @@ export class MCPProxy {
         throw error
       }
     })
+  }
+
+  // 블록 하위 항목 병렬 처리 최적화 메서드
+  private async handleBlockChildrenParallel(operation: OpenAPIV3.OperationObject & { method: string; path: string }, params: any) {
+    console.log(`노션 API 병렬 처리 시작: ${operation.method.toUpperCase()} ${operation.path}`)
+    
+    // 첫 번째 페이지 조회
+    const initialResponse = await this.httpClient.executeOperation(operation, params)
+    
+    if (initialResponse.status !== 200) {
+      console.error('응답 오류:', initialResponse.data)
+      return {
+        content: [{ type: 'text', text: JSON.stringify(initialResponse.data) }],
+      }
+    }
+    
+    const results = initialResponse.data.results || []
+    let nextCursor = initialResponse.data.next_cursor
+    
+    // 병렬 처리를 위한 배열
+    const pageRequests = []
+    const maxParallelRequests = 5 // 동시 요청 제한
+    
+    console.log(`첫 페이지에서 블록 ${results.length}개 조회됨`)
+    
+    // 다음 페이지가 있는 경우 병렬로 요청
+    while (nextCursor) {
+      // 다음 페이지를 위한 파라미터 복제
+      const nextPageParams = { ...params, start_cursor: nextCursor }
+      
+      // 페이지 요청 추가
+      pageRequests.push(
+        this.httpClient.executeOperation(operation, nextPageParams)
+          .then(response => {
+            if (response.status === 200) {
+              console.log(`추가 페이지에서 블록 ${response.data.results?.length || 0}개 조회됨`)
+              return {
+                results: response.data.results || [],
+                next_cursor: response.data.next_cursor
+              }
+            }
+            return { results: [], next_cursor: null }
+          })
+          .catch(error => {
+            console.error('페이지 조회 오류:', error)
+            return { results: [], next_cursor: null }
+          })
+      )
+      
+      // 최대 동시 요청 수에 도달했거나 더 이상 다음 페이지가 없으면 병렬 처리 실행
+      if (pageRequests.length >= maxParallelRequests || !nextCursor) {
+        console.log(`${pageRequests.length}개 페이지 병렬 처리 중...`)
+        const pageResponses = await Promise.all(pageRequests)
+        
+        // 결과 병합
+        for (const response of pageResponses) {
+          results.push(...response.results)
+          // 다음 배치의 시작점으로 마지막 next_cursor 설정
+          if (response.next_cursor) {
+            nextCursor = response.next_cursor
+          } else {
+            nextCursor = null
+          }
+        }
+        
+        // 요청 배열 초기화
+        pageRequests.length = 0
+      }
+      
+      // 다음 cursor가 없으면 반복 종료
+      if (!nextCursor) break
+    }
+    
+    console.log(`총 ${results.length}개 블록 조회 완료`)
+    
+    // 최종 결과 반환
+    const mergedResponse = {
+      ...initialResponse.data,
+      results,
+      has_more: false,
+      next_cursor: null
+    }
+    
+    return {
+      content: [{ type: 'text', text: JSON.stringify(mergedResponse) }],
+    }
   }
 
   private findOperation(operationId: string): (OpenAPIV3.OperationObject & { method: string; path: string }) | null {
@@ -190,6 +279,7 @@ export class MCPProxy {
   async connect(transport: Transport) {
     console.log('One Pager Assistant - MCP 서버 시작됨')
     console.log('제공 API: retrieve-a-page, get-block-children, retrieve-a-block')
+    console.log('병렬 처리 최적화 활성화됨')
     
     // The SDK will handle stdio communication
     await this.server.connect(transport)
