@@ -1,150 +1,57 @@
-# Notion MCP Server
+# One Pager Assistant 서버
 
-![notion-mcp-sm](https://github.com/user-attachments/assets/6c07003c-8455-4636-b298-d60ffdf46cd8)
+이 프로젝트는 Notion의 One Pager 문서를 읽고 질문에 답변할 수 있는 AI 어시스턴트를 지원하는 MCP(Model Context Protocol) 서버입니다. 노션 API를 통해 지정된 페이지와 그 하위 블록들을 읽어옵니다.
 
-This project implements an [MCP server](https://spec.modelcontextprotocol.io/) for the [Notion API](https://developers.notion.com/reference/intro). 
+## 주요 기능
 
-![mcp-demo](https://github.com/user-attachments/assets/e3ff90a7-7801-48a9-b807-f7dd47f0d3d6)
+- Notion API를 활용하여 페이지 정보 조회
+- 페이지의 하위 블록 내용 조회
+- 개별 블록 정보 조회
 
-### Installation
-
-#### 1. Setting up Integration in Notion:
-Go to [https://www.notion.so/profile/integrations](https://www.notion.so/profile/integrations) and create a new **internal** integration or select an existing one.
-
-![Creating a Notion Integration token](docs/images/integrations-creation.png)
-
-While we limit the scope of Notion API's exposed (for example, you will not be able to delete databases via MCP), there is a non-zero risk to workspace data by exposing it to LLMs. Security-conscious users may want to further configure the Integration's _Capabilities_. 
-
-For example, you can create a read-only integration token by giving only "Read content" access from the "Configuration" tab:
-
-![Notion Integration Token Capabilities showing Read content checked](docs/images/integrations-capabilities.png)
-
-#### 2. Adding MCP config to your client:
-
-##### Using npm:
-Add the following to your `.cursor/mcp.json` or `claude_desktop_config.json` (MacOS: `~/Library/Application\ Support/Claude/claude_desktop_config.json`)
-
-```javascript
-{
-  "mcpServers": {
-    "notionApi": {
-      "command": "npx",
-      "args": ["-y", "@notionhq/notion-mcp-server"],
-      "env": {
-        "OPENAPI_MCP_HEADERS": "{\"Authorization\": \"Bearer ntn_****\", \"Notion-Version\": \"2022-06-28\" }"
-      }
-    }
-  }
-}
-```
-
-##### Using Docker:
-
-There are two options for running the MCP server with Docker:
-
-###### Option 1: Using the official Docker Hub image:
-
-Add the following to your `.cursor/mcp.json` or `claude_desktop_config.json`:
-
-```javascript
-{
-  "mcpServers": {
-    "notionApi": {
-      "command": "docker",
-      "args": [
-        "run",
-        "--rm",
-        "-i",
-        "-e", "OPENAPI_MCP_HEADERS",
-        "mcp/notion"
-      ],
-      "env": {
-        "OPENAPI_MCP_HEADERS": "{\"Authorization\":\"Bearer ntn_****\",\"Notion-Version\":\"2022-06-28\"}"
-      }
-    }
-  }
-}
-```
-
-This approach:
-- Uses the official Docker Hub image
-- Properly handles JSON escaping via environment variables
-- Provides a more reliable configuration method
-
-###### Option 2: Building the Docker image locally:
-
-You can also build and run the Docker image locally. First, build the Docker image:
+## 설치 방법
 
 ```bash
-docker-compose build
+# 패키지 설치
+pnpm install
+
+# 서버 실행
+pnpm dev
 ```
 
-Then, add the following to your `.cursor/mcp.json` or `claude_desktop_config.json`:
+## 환경 변수 설정
 
-```javascript
-{
-  "mcpServers": {
-    "notionApi": {
-      "command": "docker",
-      "args": [
-        "run",
-        "--rm",
-        "-i",
-        "-e",
-        "OPENAPI_MCP_HEADERS={\"Authorization\": \"Bearer ntn_****\", \"Notion-Version\": \"2022-06-28\"}",
-        "notion-mcp-server"
-      ]
-    }
-  }
-}
-```
-
-Don't forget to replace `ntn_****` with your integration secret. Find it from your integration configuration tab:
-
-![Copying your Integration token from the Configuration tab in the developer portal](https://github.com/user-attachments/assets/67b44536-5333-49fa-809c-59581bf5370a)
-
-#### 3. Connecting content to integration:
-Ensure relevant pages and databases are connected to your integration.
-
-To do this, you'll need to visit that page, and click on the 3 dots, and select "Connect to integration". 
-
-![Adding Integration Token to Notion Connections](docs/images/connections.png)
-
-### Examples
-
-1. Using the following instruction
-```
-Comment "Hello MCP" on page "Getting started"
-```
-
-AI will correctly plan two API calls, `v1/search` and `v1/comments`, to achieve the task
-
-2. Similarly, the following instruction will result in a new page named "Notion MCP" added to parent page "Development"
-```
-Add a page titled "Notion MCP" to page "Development"
-```
-
-3. You may also reference content ID directly
-```
-Get the content of page 1a6b35e6e67f802fa7e1d27686f017f2
-```
-
-### Development
-
-Build
+`.env` 파일에 다음과 같이 Notion API 인증 정보를 설정합니다:
 
 ```
-npm run build
+OPENAPI_MCP_HEADERS={"Authorization":"Bearer your_notion_api_key","Notion-Version":"2022-06-28"}
 ```
 
-Execute
+## 사용 방법
 
-```
-npx -y --prefix /path/to/local/notion-mcp-server @notionhq/notion-mcp-server
+서버가 실행되면 One Pager 문서의 페이지 ID를 입력하여 해당 문서의 내용을 조회할 수 있습니다. AI 어시스턴트는 다음과 같은 API를 사용합니다:
+
+1. `API-retrieve-a-page`: 페이지 기본 정보 조회
+2. `API-get-block-children`: 페이지의 하위 블록(내용) 조회
+
+## 예제 CURL 명령어
+
+```bash
+# 페이지 정보 조회
+curl -X GET 'https://api.notion.com/v1/pages/YOUR_PAGE_ID' \
+  -H 'Authorization: Bearer ntn_XXXXX' \
+  -H 'Notion-Version: 2022-06-28'
+
+# 페이지 하위 블록 조회
+curl -X GET 'https://api.notion.com/v1/blocks/YOUR_PAGE_ID/children?page_size=100' \
+  -H 'Authorization: Bearer ntn_XXXXX' \
+  -H 'Notion-Version: 2022-06-28'
 ```
 
-Publish
+## 문제 해결
 
-```
-npm publish --access public
-```
+- API 응답이 없는 경우: 액세스 토큰과 페이지 ID를 확인하세요.
+- 권한 오류가 발생하는 경우: Notion Integration이 해당 페이지에 접근 권한이 있는지 확인하세요.
+
+## 라이센스
+
+MIT

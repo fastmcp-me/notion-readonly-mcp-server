@@ -1,12 +1,12 @@
 {
-  "name": "@notionhq/notion-mcp-server",
+  "name": "minimized-notion-mcp-server",
   "keywords": [
     "notion",
     "api",
     "mcp",
     "server"
   ],
-  "version": "1.6.0",
+  "version": "1.0.0",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -48,11 +48,11 @@
   "main": "index.js",
   "repository": {
     "type": "git",
-    "url": "git@github.com:makenotion/notion-mcp-server.git"
+    "url": "git@github.com:Taewoong1378/minimized-notion-mcp-server.git"
   },
-  "author": "@notionhq",
+  "author": "@taewoong1378",
   "bugs": {
-    "url": "https://github.com/makenotion/notion-mcp-server/issues"
+    "url": "https://github.com/Taewoong1378/minimized-notion-mcp-server/issues"
   },
-  "homepage": "https://github.com/makenotion/notion-mcp-server#readme"
+  "homepage": "https://github.com/Taewoong1378/minimized-notion-mcp-server#readme"
 }
