@@ -1,12 +1,14 @@
 {
-  "name": "minimized-notion-mcp-server",
+  "name": "notion-readonly-mcp-server",
   "keywords": [
     "notion",
     "api",
     "mcp",
-    "server"
+    "server",
+    "read-only",
+    "async"
   ],
-  "version": "1.0.1",
+  "version": "1.0.2",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -44,15 +46,15 @@
     "typescript": "^5.8.2",
     "vitest": "^3.1.1"
   },
-  "description": "Official MCP server for Notion API",
+  "description": "Optimized read-only MCP server for Notion API with asynchronous processing",
   "main": "index.js",
   "repository": {
     "type": "git",
-    "url": "git@github.com:Taewoong1378/minimized-notion-mcp-server.git"
+    "url": "git@github.com:Taewoong1378/notion-readonly-mcp-server.git"
   },
   "author": "@taewoong1378",
   "bugs": {
-    "url": "https://github.com/Taewoong1378/minimized-notion-mcp-server/issues"
+    "url": "https://github.com/Taewoong1378/notion-readonly-mcp-server/issues"
   },
-  "homepage": "https://github.com/Taewoong1378/minimized-notion-mcp-server#readme"
+  "homepage": "https://github.com/Taewoong1378/notion-readonly-mcp-server#readme"
 }
