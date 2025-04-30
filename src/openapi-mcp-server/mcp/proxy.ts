@@ -64,6 +64,7 @@ interface RecursiveExplorationOptions {
   skipCache?: boolean;
   batchSize?: number;
   timeoutMs?: number;
+  runInBackground?: boolean;
 }
 
 // import this class, extend and return server
@@ -77,6 +78,7 @@ export class MCPProxy {
   private databaseCache: Map<string, any> = new Map() // Database cache
   private commentCache: Map<string, any> = new Map() // Comment cache
   private propertyCache: Map<string, any> = new Map() // Property cache
+  private backgroundProcessingResults: Map<string, any> = new Map()
 
   constructor(name: string, openApiSpec: OpenAPIV3.Document) {
     this.server = new Server({ name, version: '1.0.0' }, { capabilities: { tools: {} } })
@@ -160,8 +162,12 @@ export class MCPProxy {
             },
             timeoutMs: {
               type: 'integer',
-              description: 'Timeout in milliseconds (default: 60000)',
+              description: 'Timeout in milliseconds (default: 300000)',
             },
+            runInBackground: {
+              type: 'boolean',
+              description: 'Process request in background without timeout (default: true)',
+            }
           },
           required: ['page_id'],
         } as Tool['inputSchema'],
@@ -169,6 +175,25 @@ export class MCPProxy {
       
       tools.push(onePagerTool);
       console.log(`- ${onePagerTool.name}: ${onePagerTool.description}`);
+      
+      // Add tool to retrieve background processing results
+      const backgroundResultTool = {
+        name: 'API-get-background-result',
+        description: 'Retrieve the result of a background processing request',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            page_id: {
+              type: 'string',
+              description: 'Identifier for the Notion page that was processed in background',
+            },
+          },
+          required: ['page_id'],
+        } as Tool['inputSchema'],
+      };
+      
+      tools.push(backgroundResultTool);
+      console.log(`- ${backgroundResultTool.name}: ${backgroundResultTool.description}`);
 
       return { tools }
     })
@@ -184,6 +209,19 @@ export class MCPProxy {
         // Handle extended One Pager tool
         if (name === 'API-get-one-pager') {
           return await this.handleOnePagerRequest(params);
+        }
+        
+        // Handle background result retrieval
+        if (name === 'API-get-background-result') {
+          const result = this.getBackgroundProcessingResult(params?.page_id as string);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(result),
+              },
+            ],
+          };
         }
 
         // Find the operation in OpenAPI spec
@@ -207,7 +245,12 @@ export class MCPProxy {
 
         // Optimized parallel processing for API-get-block-children
         if (name === 'API-get-block-children') {
-          return await this.handleBlockChildrenParallel(operation, params)
+          // Create basic options for logging control
+          const blockOptions: RecursiveExplorationOptions = {
+            runInBackground: false, // Default to not showing logs for regular API calls
+          };
+          
+          return await this.handleBlockChildrenParallel(operation, params, blockOptions);
         }
 
         // Other regular API calls
@@ -315,7 +358,8 @@ export class MCPProxy {
       maxParallelRequests: params.maxParallelRequests || 15,
       skipCache: params.skipCache || false,
       batchSize: params.batchSize || 10,
-      timeoutMs: params.timeoutMs || 60000,
+      timeoutMs: params.timeoutMs || 300000, // Increased timeout to 5 minutes (300000ms)
+      runInBackground: params.runInBackground !== false,
     };
     
     console.log('Exploration options:', JSON.stringify(options, null, 2));
@@ -323,6 +367,35 @@ export class MCPProxy {
     try {
       const startTime = Date.now();
       
+      // Check if we should run in background mode
+      if (options.runInBackground) {
+        // Return immediately with a background processing message
+        // The actual processing will continue in the background
+        this.runBackgroundProcessing(params.page_id, options);
+        
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                status: 'processing',
+                message: `Request processing for page ${params.page_id} started in background`,
+                page_id: params.page_id,
+                request_time: new Date().toISOString(),
+                options: {
+                  maxDepth: options.maxDepth,
+                  includeDatabases: options.includeDatabases,
+                  includeComments: options.includeComments,
+                  includeProperties: options.includeProperties,
+                  timeoutMs: options.timeoutMs
+                }
+              }),
+            },
+          ],
+        };
+      }
+      
+      // Foreground processing (standard behavior)
       const pageData = await this.retrievePageRecursively(params.page_id, options);
       
       const duration = Date.now() - startTime;
@@ -369,18 +442,80 @@ export class MCPProxy {
     }
   }
 
+  // New method to run processing in background
+  private runBackgroundProcessing(pageId: string, options: RecursiveExplorationOptions): void {
+    // Use setTimeout to detach from the current execution context
+    setTimeout(async () => {
+      try {
+        console.log(`Background processing started for page ${pageId}`);
+        const startTime = Date.now();
+        
+        // Execute the recursive page retrieval without time restrictions
+        const noTimeoutOptions = { ...options, timeoutMs: 0 }; // 0 means no timeout
+        const pageData = await this.retrievePageRecursively(pageId, noTimeoutOptions);
+        
+        const duration = Date.now() - startTime;
+        console.log(`Background processing completed in ${duration}ms for page ${pageId}`);
+        
+        // Store the result in cache for later retrieval
+        this.storeBackgroundProcessingResult(pageId, {
+          ...pageData,
+          _meta: {
+            processingTimeMs: duration,
+            retrievedAt: new Date().toISOString(),
+            processedInBackground: true,
+            options: {
+              maxDepth: options.maxDepth,
+              includeDatabases: options.includeDatabases,
+              includeComments: options.includeComments,
+              includeProperties: options.includeProperties
+            }
+          }
+        });
+      } catch (error) {
+        console.error(`Background processing error for page ${pageId}:`, error);
+        // Store error result for later retrieval
+        this.storeBackgroundProcessingResult(pageId, {
+          status: 'error',
+          page_id: pageId,
+          message: error instanceof Error ? error.message : String(error),
+          timestamp: new Date().toISOString()
+        });
+      }
+    }, 0);
+  }
+  
+  // Store background processing results
+  private storeBackgroundProcessingResult(pageId: string, result: any): void {
+    this.backgroundProcessingResults.set(pageId, result);
+  }
+  
+  // Add a new tool method to retrieve background processing results
+  public getBackgroundProcessingResult(pageId: string): any {
+    return this.backgroundProcessingResults.get(pageId) || { 
+      status: 'not_found',
+      message: `No background processing result found for page ${pageId}`
+    };
+  }
+
   // Recursively retrieve page content
   private async retrievePageRecursively(pageId: string, options: RecursiveExplorationOptions, currentDepth: number = 0): Promise<any> {
-    console.log(`Recursive page exploration: ${pageId}, depth: ${currentDepth}/${options.maxDepth || 5}`);
+    if (options.runInBackground) {
+      console.log(`Recursive page exploration: ${pageId}, depth: ${currentDepth}/${options.maxDepth || 5}`);
+    }
     
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error(`Operation timed out after ${options.timeoutMs}ms`)), options.timeoutMs || 60000);
+      if (options.timeoutMs && options.timeoutMs > 0) {
+        setTimeout(() => reject(new Error(`Operation timed out after ${options.timeoutMs}ms`)), options.timeoutMs);
+      }
     });
     
     try {
       // Check maximum depth
       if (currentDepth >= (options.maxDepth || 5)) {
-        console.log(`Maximum depth reached: ${currentDepth}/${options.maxDepth || 5}`);
+        if (options.runInBackground) {
+          console.log(`Maximum depth reached: ${currentDepth}/${options.maxDepth || 5}`);
+        }
         return { id: pageId, note: "Maximum recursion depth reached" };
       }
       
@@ -388,7 +523,9 @@ export class MCPProxy {
       let pageData: any;
       if (!options.skipCache && this.pageCache.has(pageId)) {
         pageData = this.pageCache.get(pageId);
-        console.log(`Page cache hit: ${pageId}`);
+        if (options.runInBackground) {
+          console.log(`Page cache hit: ${pageId}`);
+        }
       } else {
         // Retrieve page info via API call
         const operation = this.findOperation('API-retrieve-a-page');
@@ -396,11 +533,20 @@ export class MCPProxy {
           throw new Error('API-retrieve-a-page method not found.');
         }
         
-        console.log(`Notion API call: ${operation.method.toUpperCase()} ${operation.path} (pageId: ${pageId})`);
-        const response = await Promise.race([
-          this.httpClient.executeOperation(operation, { page_id: pageId }),
-          timeoutPromise
-        ]) as any; 
+        if (options.runInBackground) {
+          console.log(`Notion API call: ${operation.method.toUpperCase()} ${operation.path} (pageId: ${pageId})`);
+        }
+        
+        // Only race with timeout if timeoutMs is set
+        let response;
+        if (options.timeoutMs && options.timeoutMs > 0) {
+          response = await Promise.race([
+            this.httpClient.executeOperation(operation, { page_id: pageId }),
+            timeoutPromise
+          ]) as any;
+        } else {
+          response = await this.httpClient.executeOperation(operation, { page_id: pageId });
+        }
         
         if (response.status !== 200) {
           console.error('Error retrieving page information:', response.data);
@@ -439,7 +585,11 @@ export class MCPProxy {
       }
       
       // Execute all tasks in parallel
-      await Promise.race([Promise.all(parallelTasks), timeoutPromise]);
+      if (options.timeoutMs && options.timeoutMs > 0) {
+        await Promise.race([Promise.all(parallelTasks), timeoutPromise]);
+      } else {
+        await Promise.all(parallelTasks);
+      }
       
       // Integrate results into the main page data
       const enrichedPageData = { ...pageData };
@@ -487,10 +637,14 @@ export class MCPProxy {
   
   // Recursively retrieve block content with improved parallelism
   private async retrieveBlocksRecursively(blockId: string, options: RecursiveExplorationOptions, currentDepth: number): Promise<any[]> {
-    console.log(`Recursive block exploration: ${blockId}, depth: ${currentDepth}/${options.maxDepth || 5}`);
+    if (options.runInBackground) {
+      console.log(`Recursive block exploration: ${blockId}, depth: ${currentDepth}/${options.maxDepth || 5}`);
+    }
     
     if (currentDepth >= (options.maxDepth || 5)) {
-      console.log(`Maximum depth reached: ${currentDepth}/${options.maxDepth || 5}`);
+      if (options.runInBackground) {
+        console.log(`Maximum depth reached: ${currentDepth}/${options.maxDepth || 5}`);
+      }
       return [{ note: "Maximum recursion depth reached" }];
     }
     
@@ -503,7 +657,7 @@ export class MCPProxy {
       const blocksResponse = await this.handleBlockChildrenParallel(operation, { 
         block_id: blockId,
         page_size: 100
-      });
+      }, options);
       
       const blocksData = JSON.parse(blocksResponse.content[0].text);
       const blocks = blocksData.results || [];
@@ -798,77 +952,91 @@ export class MCPProxy {
   }
 
   // Optimized parallel processing for block children
-  private async handleBlockChildrenParallel(operation: OpenAPIV3.OperationObject & { method: string; path: string }, params: any) {
-    console.log(`Starting Notion API parallel processing: ${operation.method.toUpperCase()} ${operation.path}`)
-    
-    // Get first page
-    const initialResponse = await this.httpClient.executeOperation(operation, params)
-    
-    if (initialResponse.status !== 200) {
-      console.error('Response error:', initialResponse.data)
-      return {
-        content: [{ type: 'text', text: JSON.stringify(initialResponse.data) }],
-      }
+  private async handleBlockChildrenParallel(
+    operation: OpenAPIV3.OperationObject & { method: string; path: string }, 
+    params: any,
+    options?: RecursiveExplorationOptions
+  ) {
+    if (options?.runInBackground) {
+      console.log(`Starting Notion API parallel processing: ${operation.method.toUpperCase()} ${operation.path}`);
     }
     
-    const results = initialResponse.data.results || []
-    let nextCursor = initialResponse.data.next_cursor
+    // Get first page
+    const initialResponse = await this.httpClient.executeOperation(operation, params);
+    
+    if (initialResponse.status !== 200) {
+      console.error('Response error:', initialResponse.data);
+      return {
+        content: [{ type: 'text', text: JSON.stringify(initialResponse.data) }],
+      };
+    }
+    
+    const results = initialResponse.data.results || [];
+    let nextCursor = initialResponse.data.next_cursor;
     
     // Array for parallel processing
-    const pageRequests = []
-    const maxParallelRequests = 5 // Limit simultaneous requests
+    const pageRequests = [];
+    const maxParallelRequests = 5; // Limit simultaneous requests
     
-    console.log(`Retrieved ${results.length} blocks from first page`)
+    if (options?.runInBackground) {
+      console.log(`Retrieved ${results.length} blocks from first page`);
+    }
     
     // Request subsequent pages in parallel if available
     while (nextCursor) {
       // Clone parameters for next page
-      const nextPageParams = { ...params, start_cursor: nextCursor }
+      const nextPageParams = { ...params, start_cursor: nextCursor };
       
       // Add page request
       pageRequests.push(
         this.httpClient.executeOperation(operation, nextPageParams)
           .then(response => {
             if (response.status === 200) {
-              console.log(`Retrieved ${response.data.results?.length || 0} blocks from additional page`)
+              if (options?.runInBackground) {
+                console.log(`Retrieved ${response.data.results?.length || 0} blocks from additional page`);
+              }
               return {
                 results: response.data.results || [],
                 next_cursor: response.data.next_cursor
-              }
+              };
             }
-            return { results: [], next_cursor: null }
+            return { results: [], next_cursor: null };
           })
           .catch(error => {
-            console.error('Error retrieving page:', error)
-            return { results: [], next_cursor: null }
+            console.error('Error retrieving page:', error);
+            return { results: [], next_cursor: null };
           })
-      )
+      );
       
       // Execute parallel requests when batch size reached or no more pages
       if (pageRequests.length >= maxParallelRequests || !nextCursor) {
-        console.log(`Processing ${pageRequests.length} pages in parallel...`)
-        const pageResponses = await Promise.all(pageRequests)
+        if (options?.runInBackground) {
+          console.log(`Processing ${pageRequests.length} pages in parallel...`);
+        }
+        const pageResponses = await Promise.all(pageRequests);
         
         // Merge results
         for (const response of pageResponses) {
-          results.push(...response.results)
+          results.push(...response.results);
           // Set next cursor for next batch
           if (response.next_cursor) {
-            nextCursor = response.next_cursor
+            nextCursor = response.next_cursor;
           } else {
-            nextCursor = null
+            nextCursor = null;
           }
         }
         
         // Reset request array
-        pageRequests.length = 0
+        pageRequests.length = 0;
       }
       
       // Exit loop if no more pages
-      if (!nextCursor) break
+      if (!nextCursor) break;
     }
     
-    console.log(`Retrieved ${results.length} blocks in total`)
+    if (options?.runInBackground) {
+      console.log(`Retrieved ${results.length} blocks in total`);
+    }
     
     // Return merged response
     const mergedResponse = {
@@ -876,11 +1044,11 @@ export class MCPProxy {
       results,
       has_more: false,
       next_cursor: null
-    }
+    };
     
     return {
       content: [{ type: 'text', text: JSON.stringify(mergedResponse) }],
-    }
+    };
   }
 
   private findOperation(operationId: string): (OpenAPIV3.OperationObject & { method: string; path: string }) | null {
