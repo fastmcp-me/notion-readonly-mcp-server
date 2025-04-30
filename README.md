@@ -5,9 +5,18 @@ This project implements an optimized read-only MCP server for the Notion API, fo
 ## Key Improvements
 
 - **Read-Only Design**: Focused exclusively on data retrieval operations, ensuring safe access to Notion content.
-- **Minimized Tool Set**: Reduced the number of exposed Notion API tools to only the essential ones for document analysis.
+- **Minimized Tool Set**: Reduced the number of exposed Notion API tools from 15+ to only 6 essential ones for document analysis.
 - **Parallel Processing**: Enhanced performance by implementing asynchronous and parallel API requests for retrieving block content, significantly reducing response times.
 - **Extended Database Access**: Added support for database, page property, and comment retrieval operations.
+- **Optimized for AI Assistants**: Significantly reduced tool count addresses the "Too many tools can degrade performance" issue in AI assistants like Cursor, which limits models to approximately 40 tools.
+
+## Tool Comparison
+
+This read-only implementation exposes far fewer tools compared to the standard Notion API integration, improving performance and compatibility with AI assistants:
+
+![Notion API Tools Comparison](docs/images/notion-api-tools-comparison.png)
+
+The reduced tool set helps stay within the recommended tool limits for optimal AI assistant performance while still providing all essential functionality.
 
 ## Installation
 
@@ -88,6 +97,13 @@ This optimized server exposes only essential read-only Notion API tools:
 - `API-retrieve-a-comment`: Get comments on a page or block
 - `API-retrieve-a-page-property`: Get specific property information from a page
 
+By limiting to these 6 essential tools (compared to 15+ in the standard implementation), we ensure:
+
+1. Better performance in AI assistants like Cursor and Claude that have tool count limitations
+2. Reduced cognitive load for AI models when choosing appropriate tools
+3. Faster response times with fewer API options to consider
+4. Enhanced security through minimized API surface area
+
 ## Asynchronous Processing
 
 The server implements advanced parallel processing techniques for handling large Notion documents:
@@ -130,3 +146,17 @@ pnpm dev
 ## License
 
 MIT
+
+## AI Assistant Performance Benefits
+
+Modern AI assistants like Cursor and Claude have limitations on the number of tools they can effectively handle:
+
+- Most models may not respect more than 40 tools in total
+- Too many tools can degrade overall performance and reasoning capabilities
+- Complex tool sets increase response latency and decision-making difficulty
+
+This read-only implementation deliberately reduces the Notion API surface to address these limitations while preserving all essential functionality. The result is:
+
+- Faster and more reliable responses from AI assistants
+- Improved accuracy when interacting with Notion content
+- Better overall performance through focused API design
