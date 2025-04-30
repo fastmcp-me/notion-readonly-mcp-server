@@ -1,8 +1,8 @@
-import { MCPProxy } from '../proxy'
-import { OpenAPIV3 } from 'openapi-types'
-import { HttpClient } from '../../client/http-client'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
-import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
+import { OpenAPIV3 } from 'openapi-types'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { HttpClient } from '../../client/http-client'
+import { MCPProxy } from '../proxy'
 
 // Mock the dependencies
 vi.mock('../../client/http-client')
@@ -129,7 +129,18 @@ describe('MCPProxy', () => {
             arguments: {},
           },
         }),
-      ).rejects.toThrow('Method nonExistentMethod not found')
+      ).resolves.toEqual({
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              status: 'error',
+              message: 'Method nonExistentMethod not found.',
+              code: 404
+            }),
+          },
+        ],
+      })
     })
 
     it('should handle tool names exceeding 64 characters', async () => {

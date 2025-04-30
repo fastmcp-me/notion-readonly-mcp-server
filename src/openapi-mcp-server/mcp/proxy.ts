@@ -62,6 +62,8 @@ interface RecursiveExplorationOptions {
   includeProperties?: boolean;
   maxParallelRequests?: number;
   skipCache?: boolean;
+  batchSize?: number;
+  timeoutMs?: number;
 }
 
 // import this class, extend and return server
@@ -147,7 +149,19 @@ export class MCPProxy {
             includeProperties: {
               type: 'boolean',
               description: 'Whether to include detailed page properties (default: true)',
-            }
+            },
+            maxParallelRequests: {
+              type: 'integer',
+              description: 'Maximum number of parallel requests (default: 15)',
+            },
+            batchSize: {
+              type: 'integer',
+              description: 'Batch size for parallel processing (default: 10)',
+            },
+            timeoutMs: {
+              type: 'integer',
+              description: 'Timeout in milliseconds (default: 60000)',
+            },
           },
           required: ['page_id'],
         } as Tool['inputSchema'],
@@ -177,7 +191,18 @@ export class MCPProxy {
         if (!operation) {
           const error = `Method ${name} not found.`
           console.error(error)
-          throw new Error(error)
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  status: 'error',
+                  message: error,
+                  code: 404
+                }),
+              },
+            ],
+          }
         }
 
         // Optimized parallel processing for API-get-block-children
@@ -211,6 +236,7 @@ export class MCPProxy {
         }
       } catch (error) {
         console.error('Tool call error', error)
+        
         if (error instanceof HttpClientError) {
           console.error('HttpClientError occurred, returning structured error', error)
           const data = error.data?.response?.data ?? error.data ?? {}
@@ -220,13 +246,28 @@ export class MCPProxy {
                 type: 'text',
                 text: JSON.stringify({
                   status: 'error',
-                  ...(typeof data === 'object' ? data : { data: data }),
+                  code: error.status,
+                  message: error.message,
+                  details: typeof data === 'object' ? data : { data: data },
                 }),
               },
             ],
           }
         }
-        throw error
+        
+        // Ensure any other errors are also properly formatted as JSON
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                status: 'error',
+                message: error instanceof Error ? error.message : String(error),
+                code: 500
+              }),
+            },
+          ],
+        }
       }
     })
   }
@@ -271,142 +312,334 @@ export class MCPProxy {
       includeDatabases: params.includeDatabases !== false,
       includeComments: params.includeComments !== false,
       includeProperties: params.includeProperties !== false,
-      maxParallelRequests: 10,
-      skipCache: params.skipCache || false
+      maxParallelRequests: params.maxParallelRequests || 15,
+      skipCache: params.skipCache || false,
+      batchSize: params.batchSize || 10,
+      timeoutMs: params.timeoutMs || 60000,
     };
     
-    console.log('Exploration options:', options);
+    console.log('Exploration options:', JSON.stringify(options, null, 2));
     
-    // 1. Retrieve page information
-    const pageData = await this.retrievePageRecursively(params.page_id, options);
-    
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(pageData),
-        },
-      ],
-    };
+    try {
+      const startTime = Date.now();
+      
+      const pageData = await this.retrievePageRecursively(params.page_id, options);
+      
+      const duration = Date.now() - startTime;
+      console.log(`One Pager completed in ${duration}ms for page ${params.page_id}`);
+      
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ...pageData,
+              _meta: {
+                processingTimeMs: duration,
+                retrievedAt: new Date().toISOString(),
+                options: {
+                  maxDepth: options.maxDepth,
+                  includeDatabases: options.includeDatabases,
+                  includeComments: options.includeComments,
+                  includeProperties: options.includeProperties
+                }
+              }
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      console.error('Error in One Pager request:', error);
+      const errorResponse = {
+        status: 'error',
+        message: error instanceof Error ? error.message : String(error),
+        code: error instanceof HttpClientError ? error.status : 500,
+        details: error instanceof HttpClientError ? error.data : undefined,
+        timestamp: new Date().toISOString()
+      };
+      
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(errorResponse),
+          },
+        ],
+      };
+    }
   }
 
   // Recursively retrieve page content
   private async retrievePageRecursively(pageId: string, options: RecursiveExplorationOptions, currentDepth: number = 0): Promise<any> {
     console.log(`Recursive page exploration: ${pageId}, depth: ${currentDepth}/${options.maxDepth || 5}`);
     
-    // Check maximum depth
-    if (currentDepth >= (options.maxDepth || 5)) {
-      console.log(`Maximum depth reached: ${currentDepth}/${options.maxDepth || 5}`);
-      return { id: pageId, note: "Maximum recursion depth reached" };
-    }
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error(`Operation timed out after ${options.timeoutMs}ms`)), options.timeoutMs || 60000);
+    });
     
-    // 1. Get basic page info (check cache)
-    let pageData: any;
-    if (!options.skipCache && this.pageCache.has(pageId)) {
-      pageData = this.pageCache.get(pageId);
-      console.log(`Page cache hit: ${pageId}`);
-    } else {
-      // Retrieve page info via API call
-      const operation = this.findOperation('API-retrieve-a-page');
-      if (!operation) {
-        throw new Error('API-retrieve-a-page method not found.');
+    try {
+      // Check maximum depth
+      if (currentDepth >= (options.maxDepth || 5)) {
+        console.log(`Maximum depth reached: ${currentDepth}/${options.maxDepth || 5}`);
+        return { id: pageId, note: "Maximum recursion depth reached" };
       }
       
-      console.log(`Notion API call: ${operation.method.toUpperCase()} ${operation.path} (pageId: ${pageId})`);
-      const response = await this.httpClient.executeOperation(operation, { page_id: pageId });
-      
-      if (response.status !== 200) {
-        console.error('Error retrieving page information:', response.data);
-        return { error: "Failed to retrieve page", details: response.data };
+      // 1. Get basic page info (check cache)
+      let pageData: any;
+      if (!options.skipCache && this.pageCache.has(pageId)) {
+        pageData = this.pageCache.get(pageId);
+        console.log(`Page cache hit: ${pageId}`);
+      } else {
+        // Retrieve page info via API call
+        const operation = this.findOperation('API-retrieve-a-page');
+        if (!operation) {
+          throw new Error('API-retrieve-a-page method not found.');
+        }
+        
+        console.log(`Notion API call: ${operation.method.toUpperCase()} ${operation.path} (pageId: ${pageId})`);
+        const response = await Promise.race([
+          this.httpClient.executeOperation(operation, { page_id: pageId }),
+          timeoutPromise
+        ]) as any; 
+        
+        if (response.status !== 200) {
+          console.error('Error retrieving page information:', response.data);
+          return { 
+            id: pageId,
+            error: "Failed to retrieve page", 
+            status: response.status,
+            details: response.data 
+          };
+        }
+        
+        pageData = response.data;
+        // Only cache successful responses
+        this.pageCache.set(pageId, pageData);
       }
       
-      pageData = response.data;
-      this.pageCache.set(pageId, pageData);
-    }
-    
-    // 2. Get page block content
-    const enrichedPageData = { ...pageData };
-    
-    // Retrieve block content
-    const blocksData = await this.retrieveBlocksRecursively(pageId, options, currentDepth + 1);
-    enrichedPageData.content = blocksData;
-    
-    // 3. Get property details (if option enabled)
-    if (options.includeProperties && pageData.properties) {
-      const enrichedProperties = await this.enrichPageProperties(pageId, pageData.properties, options);
-      enrichedPageData.detailed_properties = enrichedProperties;
-    }
-    
-    // 4. Get comments (if option enabled)
-    if (options.includeComments) {
-      const comments = await this.retrieveComments(pageId, options);
-      if (comments && comments.results && comments.results.length > 0) {
-        enrichedPageData.comments = comments;
+      // Collection of tasks to be executed in parallel for improved efficiency
+      const parallelTasks: Promise<any>[] = [];
+      
+      // 2. Fetch block content (register async task)
+      const blocksPromise = this.retrieveBlocksRecursively(pageId, options, currentDepth + 1);
+      parallelTasks.push(blocksPromise);
+      
+      // 3. Fetch property details (if option enabled)
+      let propertiesPromise: Promise<any> = Promise.resolve(null);
+      if (options.includeProperties && pageData.properties) {
+        propertiesPromise = this.enrichPageProperties(pageId, pageData.properties, options);
+        parallelTasks.push(propertiesPromise);
       }
+      
+      // 4. Fetch comments (if option enabled)
+      let commentsPromise: Promise<any> = Promise.resolve(null);
+      if (options.includeComments) {
+        commentsPromise = this.retrieveComments(pageId, options);
+        parallelTasks.push(commentsPromise);
+      }
+      
+      // Execute all tasks in parallel
+      await Promise.race([Promise.all(parallelTasks), timeoutPromise]);
+      
+      // Integrate results into the main page data
+      const enrichedPageData = { ...pageData };
+      
+      // Add block content
+      const blocksData = await blocksPromise;
+      enrichedPageData.content = blocksData;
+      
+      // Add property details (if option enabled)
+      if (options.includeProperties && pageData.properties) {
+        const enrichedProperties = await propertiesPromise;
+        if (enrichedProperties) {
+          enrichedPageData.detailed_properties = enrichedProperties;
+        }
+      }
+      
+      // Add comments (if option enabled)
+      if (options.includeComments) {
+        const comments = await commentsPromise;
+        if (comments && comments.results && comments.results.length > 0) {
+          enrichedPageData.comments = comments;
+        }
+      }
+      
+      return enrichedPageData;
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('timed out')) {
+        console.error(`Timeout occurred while processing page ${pageId} at depth ${currentDepth}`);
+        return { 
+          id: pageId, 
+          error: "Operation timed out", 
+          partial_results: true,
+          note: `Processing exceeded timeout limit (${options.timeoutMs}ms)`
+        };
+      }
+      
+      console.error(`Error in retrievePageRecursively for page ${pageId}:`, error);
+      return { 
+        id: pageId, 
+        error: error instanceof Error ? error.message : String(error),
+        retrievalFailed: true
+      };
     }
-    
-    return enrichedPageData;
   }
   
-  // Recursively retrieve block content
+  // Recursively retrieve block content with improved parallelism
   private async retrieveBlocksRecursively(blockId: string, options: RecursiveExplorationOptions, currentDepth: number): Promise<any[]> {
     console.log(`Recursive block exploration: ${blockId}, depth: ${currentDepth}/${options.maxDepth || 5}`);
     
-    // Check maximum depth
     if (currentDepth >= (options.maxDepth || 5)) {
       console.log(`Maximum depth reached: ${currentDepth}/${options.maxDepth || 5}`);
       return [{ note: "Maximum recursion depth reached" }];
     }
     
-    // Get block children via API call
-    const operation = this.findOperation('API-get-block-children');
-    if (!operation) {
-      throw new Error('API-get-block-children method not found.');
+    try {
+      const operation = this.findOperation('API-get-block-children');
+      if (!operation) {
+        throw new Error('API-get-block-children method not found.');
+      }
+      
+      const blocksResponse = await this.handleBlockChildrenParallel(operation, { 
+        block_id: blockId,
+        page_size: 100
+      });
+      
+      const blocksData = JSON.parse(blocksResponse.content[0].text);
+      const blocks = blocksData.results || [];
+      
+      if (blocks.length === 0) {
+        return [];
+      }
+      
+      const batchSize = options.batchSize || 10;
+      const enrichedBlocks: any[] = [];
+      
+      // Process blocks in batches for memory optimization and improved parallel execution
+      for (let i = 0; i < blocks.length; i += batchSize) {
+        const batch = blocks.slice(i, i + batchSize);
+        
+        // Process each batch in parallel
+        const batchResults = await Promise.all(
+          batch.map(async (block: any) => {
+            this.blockCache.set(block.id, block);
+            
+            const enrichedBlock = { ...block };
+            
+            // Collection of async tasks for this block
+            const blockTasks: Promise<any>[] = [];
+            
+            // Process child blocks recursively
+            if (block.has_children) {
+              blockTasks.push(
+                this.retrieveBlocksRecursively(block.id, options, currentDepth + 1)
+                  .then(childBlocks => { enrichedBlock.children = childBlocks; })
+                  .catch(error => {
+                    console.error(`Error retrieving child blocks for ${block.id}:`, error);
+                    enrichedBlock.children_error = { message: String(error) };
+                    return [];
+                  })
+              );
+            }
+            
+            // Process database blocks (if option enabled)
+            if (options.includeDatabases && 
+                (block.type === 'child_database' || block.type === 'linked_database')) {
+              const databaseId = block[block.type]?.database_id;
+              if (databaseId) {
+                blockTasks.push(
+                  this.retrieveDatabase(databaseId, options)
+                    .then(database => { enrichedBlock.database = database; })
+                    .catch(error => {
+                      console.error(`Error retrieving database ${databaseId}:`, error);
+                      enrichedBlock.database_error = { message: String(error) };
+                    })
+                );
+              }
+            }
+            
+            // Process page blocks or linked pages - optimization
+            if (block.type === 'child_page' && currentDepth < (options.maxDepth || 5) - 1) {
+              const pageId = block.id;
+              blockTasks.push(
+                this.retrievePageBasicInfo(pageId, options)
+                  .then(pageInfo => { enrichedBlock.page_info = pageInfo; })
+                  .catch(error => {
+                    console.error(`Error retrieving page info for ${pageId}:`, error);
+                    enrichedBlock.page_info_error = { message: String(error) };
+                  })
+              );
+            }
+            
+            // Wait for all async tasks to complete
+            if (blockTasks.length > 0) {
+              await Promise.all(blockTasks);
+            }
+            
+            return enrichedBlock;
+          })
+        );
+        
+        enrichedBlocks.push(...batchResults);
+      }
+      
+      return enrichedBlocks;
+    } catch (error) {
+      console.error(`Error in retrieveBlocksRecursively for block ${blockId}:`, error);
+      return [{ 
+        id: blockId, 
+        error: error instanceof Error ? error.message : String(error),
+        retrievalFailed: true
+      }];
     }
-    
-    // Get all block children via parallel processing
-    const blocksResponse = await this.handleBlockChildrenParallel(operation, { 
-      block_id: blockId,
-      page_size: 100
-    });
-    
-    const blocksData = JSON.parse(blocksResponse.content[0].text);
-    const blocks = blocksData.results || [];
-    
-    // Process each block recursively if it has children
-    const enrichedBlocks = await Promise.all(
-      blocks.map(async (block: any) => {
-        // Cache block
-        this.blockCache.set(block.id, block);
-        
-        const enrichedBlock = { ...block };
-        
-        // Process child blocks recursively
-        if (block.has_children) {
-          const childBlocks = await this.retrieveBlocksRecursively(
-            block.id, 
-            options, 
-            currentDepth + 1
-          );
-          enrichedBlock.children = childBlocks;
-        }
-        
-        // Process database blocks (if option enabled)
-        if (options.includeDatabases && 
-            (block.type === 'child_database' || block.type === 'linked_database')) {
-          const databaseId = block[block.type]?.database_id;
-          if (databaseId) {
-            enrichedBlock.database = await this.retrieveDatabase(databaseId, options);
-          }
-        }
-        
-        return enrichedBlock;
-      })
-    );
-    
-    return enrichedBlocks;
   }
   
+  // Lightweight method to fetch only basic page info (without recursive loading)
+  private async retrievePageBasicInfo(pageId: string, options: RecursiveExplorationOptions): Promise<any> {
+    // Check cache
+    if (!options.skipCache && this.pageCache.has(pageId)) {
+      const cachedData = this.pageCache.get(pageId);
+      return {
+        id: cachedData.id,
+        title: cachedData.properties?.title || { text: null },
+        icon: cachedData.icon,
+        cover: cachedData.cover,
+        url: cachedData.url,
+        fromCache: true
+      };
+    }
+    
+    // Get page info via API
+    const operation = this.findOperation('API-retrieve-a-page');
+    if (!operation) {
+      return { id: pageId, note: "API-retrieve-a-page method not found" };
+    }
+    
+    try {
+      const response = await this.httpClient.executeOperation(operation, { page_id: pageId });
+      
+      if (response.status !== 200) {
+        return { id: pageId, error: "Failed to retrieve page", status: response.status };
+      }
+      
+      const pageData = response.data;
+      this.pageCache.set(pageId, pageData);
+      
+      return {
+        id: pageData.id,
+        title: pageData.properties?.title || { text: null },
+        icon: pageData.icon,
+        cover: pageData.cover,
+        url: pageData.url,
+        created_time: pageData.created_time,
+        last_edited_time: pageData.last_edited_time
+      };
+    } catch (error) {
+      console.error(`Error retrieving basic page info ${pageId}:`, error);
+      return { id: pageId, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   // Retrieve database information
   private async retrieveDatabase(databaseId: string, options: RecursiveExplorationOptions): Promise<any> {
     console.log(`Retrieving database information: ${databaseId}`);
@@ -502,6 +735,17 @@ export class MCPProxy {
             if (!options.skipCache && this.propertyCache.has(cacheKey)) {
               enrichedProperties[propName].details = this.propertyCache.get(cacheKey);
             } else {
+              // Skip properties with URLs that contain special characters like notion://
+              if (propId.includes('notion://') || propId.includes('%3A%2F%2F')) {
+                console.warn(`Skipping property with special URL format: ${propName} (${propId})`);
+                enrichedProperties[propName].details = { 
+                  object: 'property_item', 
+                  type: 'unsupported',
+                  unsupported: { type: 'special_url_format' } 
+                };
+                return;
+              }
+              
               // Get property details via API call
               const operation = this.findOperation('API-retrieve-a-page-property');
               if (!operation) {
@@ -512,15 +756,36 @@ export class MCPProxy {
               const response = await this.httpClient.executeOperation(operation, {
                 page_id: pageId,
                 property_id: propId
+              }).catch(error => {
+                console.warn(`Error retrieving property ${propName} (${propId}): ${error.message}`);
+                return { 
+                  status: error.status || 500,
+                  data: { 
+                    object: 'property_item', 
+                    type: 'error',
+                    error: { message: error.message } 
+                  }
+                };
               });
               
               if (response.status === 200) {
                 enrichedProperties[propName].details = response.data;
                 this.propertyCache.set(cacheKey, response.data);
+              } else {
+                enrichedProperties[propName].details = { 
+                  object: 'property_item', 
+                  type: 'error',
+                  error: { status: response.status, message: JSON.stringify(response.data) } 
+                };
               }
             }
           } catch (error) {
             console.error(`Error retrieving property ${propName}:`, error);
+            enrichedProperties[propName].details = { 
+              object: 'property_item', 
+              type: 'error',
+              error: { message: error instanceof Error ? error.message : String(error) } 
+            };
           }
         })()
       );
