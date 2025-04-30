@@ -96,13 +96,38 @@ This optimized server exposes only essential read-only Notion API tools:
 - `API-retrieve-a-database`: Get database information
 - `API-retrieve-a-comment`: Get comments on a page or block
 - `API-retrieve-a-page-property`: Get specific property information from a page
+- `API-get-one-pager`: **NEW!** Recursively retrieve a full Notion page with all its blocks, databases, and related content in a single call
 
-By limiting to these 6 essential tools (compared to 15+ in the standard implementation), we ensure:
+By limiting to these 7 essential tools (compared to 15+ in the standard implementation), we ensure:
 
 1. Better performance in AI assistants like Cursor and Claude that have tool count limitations
 2. Reduced cognitive load for AI models when choosing appropriate tools
 3. Faster response times with fewer API options to consider
 4. Enhanced security through minimized API surface area
+
+## Automatic Content Exploration
+
+The new `API-get-one-pager` tool provides a powerful way to explore Notion pages without requiring multiple API calls:
+
+- **Recursive retrieval**: Automatically traverses the entire page structure including nested blocks
+- **Parallel processing**: Fetches multiple blocks and their children simultaneously for maximum performance
+- **Intelligent caching**: Stores retrieved data to minimize redundant API calls
+- **Comprehensive content**: Includes pages, blocks, databases, comments, and detailed property information
+- **Customizable depth**: Control the level of recursion to balance between detail and performance
+
+### Using One Pager Tool
+
+```
+{
+  "page_id": "YOUR_PAGE_ID",
+  "maxDepth": 5,               // Optional: Maximum recursion depth (default: 5)
+  "includeDatabases": true,    // Optional: Include linked databases (default: true)
+  "includeComments": true,     // Optional: Include comments (default: true)
+  "includeProperties": true    // Optional: Include detailed page properties (default: true)
+}
+```
+
+This automatic exploration capability is especially useful for AI assistants that need to understand the entire content of a Notion page without making dozens of separate API calls, resulting in much faster and more efficient responses.
 
 ## Asynchronous Processing
 

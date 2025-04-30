@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { HttpClient } from '../http-client'
 import type express from 'express'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { HttpClient } from '../http-client'
 //@ts-ignore
-import { createPetstoreServer } from '../../../examples/petstore-server.cjs'
-import type { OpenAPIV3 } from 'openapi-types'
 import axios from 'axios'
+import type { OpenAPIV3 } from 'openapi-types'
+import { createPetstoreServer } from '../../../../examples/petstore-server.cjs'
 
 interface Pet {
   id: number

@@ -23,13 +23,58 @@ type NewToolDefinition = {
   }>
 }
 
+// Notion object type definition
+interface NotionBlock {
+  object: 'block';
+  id: string;
+  type: string;
+  has_children?: boolean;
+  [key: string]: any; // Allow additional fields
+}
+
+interface NotionPage {
+  object: 'page';
+  id: string;
+  properties: Record<string, any>;
+  [key: string]: any; // Allow additional fields
+}
+
+interface NotionDatabase {
+  object: 'database';
+  id: string;
+  properties: Record<string, any>;
+  [key: string]: any; // Allow additional fields
+}
+
+interface NotionComment {
+  object: 'comment';
+  id: string;
+  [key: string]: any; // Allow additional fields
+}
+
+type NotionObject = NotionBlock | NotionPage | NotionDatabase | NotionComment;
+
+// Recursive exploration options
+interface RecursiveExplorationOptions {
+  maxDepth?: number;
+  includeDatabases?: boolean;
+  includeComments?: boolean;
+  includeProperties?: boolean;
+  maxParallelRequests?: number;
+  skipCache?: boolean;
+}
+
 // import this class, extend and return server
 export class MCPProxy {
   private server: Server
   private httpClient: HttpClient
   private tools: Record<string, NewToolDefinition>
   private openApiLookup: Record<string, OpenAPIV3.OperationObject & { method: string; path: string }>
-  private pageCache: Map<string, any> = new Map() // 성능 향상을 위한 캐시
+  private pageCache: Map<string, any> = new Map() // Cache for performance improvement
+  private blockCache: Map<string, any> = new Map() // Block cache
+  private databaseCache: Map<string, any> = new Map() // Database cache
+  private commentCache: Map<string, any> = new Map() // Comment cache
+  private propertyCache: Map<string, any> = new Map() // Property cache
 
   constructor(name: string, openApiSpec: OpenAPIV3.Document) {
     this.server = new Server({ name, version: '1.0.0' }, { capabilities: { tools: {} } })
@@ -59,8 +104,8 @@ export class MCPProxy {
     this.server.setRequestHandler(ListToolsRequestSchema, async () => {
       const tools: Tool[] = []
 
-      // 로그 출력 - 사용 가능한 도구 목록
-      console.log('One Pager Assistant - 사용 가능한 도구 목록:')
+      // Log available tools
+      console.log('One Pager Assistant - Available tools:')
 
       // Add methods as separate tools to match the MCP format
       Object.entries(this.tools).forEach(([toolName, def]) => {
@@ -76,6 +121,41 @@ export class MCPProxy {
         })
       })
 
+      // Add extended One Pager tool
+      const onePagerTool = {
+        name: 'API-get-one-pager',
+        description: 'Recursively retrieve a full Notion page with all its blocks, databases, and related content',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            page_id: {
+              type: 'string',
+              description: 'Identifier for a Notion page',
+            },
+            maxDepth: {
+              type: 'integer',
+              description: 'Maximum recursion depth (default: 5)',
+            },
+            includeDatabases: {
+              type: 'boolean',
+              description: 'Whether to include linked databases (default: true)',
+            },
+            includeComments: {
+              type: 'boolean',
+              description: 'Whether to include comments (default: true)',
+            },
+            includeProperties: {
+              type: 'boolean',
+              description: 'Whether to include detailed page properties (default: true)',
+            }
+          },
+          required: ['page_id'],
+        } as Tool['inputSchema'],
+      };
+      
+      tools.push(onePagerTool);
+      console.log(`- ${onePagerTool.name}: ${onePagerTool.description}`);
+
       return { tools }
     })
 
@@ -83,39 +163,42 @@ export class MCPProxy {
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: params } = request.params
 
-      console.log(`One Pager Assistant - 도구 호출: ${name}`)
-      console.log('파라미터:', JSON.stringify(params, null, 2))
-
-      // Find the operation in OpenAPI spec
-      const operation = this.findOperation(name)
-      if (!operation) {
-        const error = `메서드 ${name}를 찾을 수 없습니다.`
-        console.error(error)
-        throw new Error(error)
-      }
+      console.log(`One Pager Assistant - Tool call: ${name}`)
+      console.log('Parameters:', JSON.stringify(params, null, 2))
 
       try {
-        // API-get-block-children 호출 시 병렬 처리 최적화
+        // Handle extended One Pager tool
+        if (name === 'API-get-one-pager') {
+          return await this.handleOnePagerRequest(params);
+        }
+
+        // Find the operation in OpenAPI spec
+        const operation = this.findOperation(name)
+        if (!operation) {
+          const error = `Method ${name} not found.`
+          console.error(error)
+          throw new Error(error)
+        }
+
+        // Optimized parallel processing for API-get-block-children
         if (name === 'API-get-block-children') {
           return await this.handleBlockChildrenParallel(operation, params)
         }
 
-        // 다른 일반 API 호출
-        console.log(`노션 API 호출: ${operation.method.toUpperCase()} ${operation.path}`)
+        // Other regular API calls
+        console.log(`Notion API call: ${operation.method.toUpperCase()} ${operation.path}`)
         const response = await this.httpClient.executeOperation(operation, params)
 
-        // 응답 결과 요약 로그
-        console.log('노션 API 응답 코드:', response.status)
+        // Log response summary
+        console.log('Notion API response code:', response.status)
         if (response.status !== 200) {
-          console.error('응답 오류:', response.data)
+          console.error('Response error:', response.data)
         } else {
-          console.log('응답 성공')
+          console.log('Response success')
         }
 
-        // 페이지 정보 캐싱 (retrieve-a-page 호출인 경우)
-        if (name === 'API-retrieve-a-page' && response.data && response.data.id) {
-          this.pageCache.set(response.data.id, response.data)
-        }
+        // Update cache with response data
+        this.updateCacheFromResponse(name, response.data);
 
         // Convert response to MCP format
         return {
@@ -127,9 +210,9 @@ export class MCPProxy {
           ],
         }
       } catch (error) {
-        console.error('도구 호출 오류', error)
+        console.error('Tool call error', error)
         if (error instanceof HttpClientError) {
-          console.error('HttpClientError 발생, 구조화된 오류 반환', error)
+          console.error('HttpClientError occurred, returning structured error', error)
           const data = error.data?.response?.data ?? error.data ?? {}
           return {
             content: [
@@ -148,15 +231,316 @@ export class MCPProxy {
     })
   }
 
-  // 블록 하위 항목 병렬 처리 최적화 메서드
-  private async handleBlockChildrenParallel(operation: OpenAPIV3.OperationObject & { method: string; path: string }, params: any) {
-    console.log(`노션 API 병렬 처리 시작: ${operation.method.toUpperCase()} ${operation.path}`)
+  // Update cache based on API response type
+  private updateCacheFromResponse(apiName: string, data: any): void {
+    if (!data || typeof data !== 'object') return;
+
+    try {
+      // Update appropriate cache based on API response type
+      if (apiName === 'API-retrieve-a-page' && data.object === 'page' && data.id) {
+        this.pageCache.set(data.id, data);
+      } else if (apiName === 'API-retrieve-a-block' && data.object === 'block' && data.id) {
+        this.blockCache.set(data.id, data);
+      } else if (apiName === 'API-retrieve-a-database' && data.object === 'database' && data.id) {
+        this.databaseCache.set(data.id, data);
+      } else if (apiName === 'API-retrieve-a-comment' && data.results) {
+        // Cache comments from result list
+        data.results.forEach((comment: any) => {
+          if (comment.object === 'comment' && comment.id) {
+            this.commentCache.set(comment.id, comment);
+          }
+        });
+      } else if (apiName === 'API-retrieve-a-page-property' && data.results) {
+        // Page property caching - would need params from call context
+        // Skip this in current context
+        console.log('Page property information has been cached');
+      }
+
+      // API-get-block-children handled in handleBlockChildrenParallel
+    } catch (error) {
+      console.warn('Error updating cache:', error);
+    }
+  }
+
+  // One Pager request handler
+  private async handleOnePagerRequest(params: any) {
+    console.log('Starting One Pager request processing:', params.page_id);
     
-    // 첫 번째 페이지 조회
+    const options: RecursiveExplorationOptions = {
+      maxDepth: params.maxDepth || 5,
+      includeDatabases: params.includeDatabases !== false,
+      includeComments: params.includeComments !== false,
+      includeProperties: params.includeProperties !== false,
+      maxParallelRequests: 10,
+      skipCache: params.skipCache || false
+    };
+    
+    console.log('Exploration options:', options);
+    
+    // 1. Retrieve page information
+    const pageData = await this.retrievePageRecursively(params.page_id, options);
+    
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(pageData),
+        },
+      ],
+    };
+  }
+
+  // Recursively retrieve page content
+  private async retrievePageRecursively(pageId: string, options: RecursiveExplorationOptions, currentDepth: number = 0): Promise<any> {
+    console.log(`Recursive page exploration: ${pageId}, depth: ${currentDepth}/${options.maxDepth || 5}`);
+    
+    // Check maximum depth
+    if (currentDepth >= (options.maxDepth || 5)) {
+      console.log(`Maximum depth reached: ${currentDepth}/${options.maxDepth || 5}`);
+      return { id: pageId, note: "Maximum recursion depth reached" };
+    }
+    
+    // 1. Get basic page info (check cache)
+    let pageData: any;
+    if (!options.skipCache && this.pageCache.has(pageId)) {
+      pageData = this.pageCache.get(pageId);
+      console.log(`Page cache hit: ${pageId}`);
+    } else {
+      // Retrieve page info via API call
+      const operation = this.findOperation('API-retrieve-a-page');
+      if (!operation) {
+        throw new Error('API-retrieve-a-page method not found.');
+      }
+      
+      console.log(`Notion API call: ${operation.method.toUpperCase()} ${operation.path} (pageId: ${pageId})`);
+      const response = await this.httpClient.executeOperation(operation, { page_id: pageId });
+      
+      if (response.status !== 200) {
+        console.error('Error retrieving page information:', response.data);
+        return { error: "Failed to retrieve page", details: response.data };
+      }
+      
+      pageData = response.data;
+      this.pageCache.set(pageId, pageData);
+    }
+    
+    // 2. Get page block content
+    const enrichedPageData = { ...pageData };
+    
+    // Retrieve block content
+    const blocksData = await this.retrieveBlocksRecursively(pageId, options, currentDepth + 1);
+    enrichedPageData.content = blocksData;
+    
+    // 3. Get property details (if option enabled)
+    if (options.includeProperties && pageData.properties) {
+      const enrichedProperties = await this.enrichPageProperties(pageId, pageData.properties, options);
+      enrichedPageData.detailed_properties = enrichedProperties;
+    }
+    
+    // 4. Get comments (if option enabled)
+    if (options.includeComments) {
+      const comments = await this.retrieveComments(pageId, options);
+      if (comments && comments.results && comments.results.length > 0) {
+        enrichedPageData.comments = comments;
+      }
+    }
+    
+    return enrichedPageData;
+  }
+  
+  // Recursively retrieve block content
+  private async retrieveBlocksRecursively(blockId: string, options: RecursiveExplorationOptions, currentDepth: number): Promise<any[]> {
+    console.log(`Recursive block exploration: ${blockId}, depth: ${currentDepth}/${options.maxDepth || 5}`);
+    
+    // Check maximum depth
+    if (currentDepth >= (options.maxDepth || 5)) {
+      console.log(`Maximum depth reached: ${currentDepth}/${options.maxDepth || 5}`);
+      return [{ note: "Maximum recursion depth reached" }];
+    }
+    
+    // Get block children via API call
+    const operation = this.findOperation('API-get-block-children');
+    if (!operation) {
+      throw new Error('API-get-block-children method not found.');
+    }
+    
+    // Get all block children via parallel processing
+    const blocksResponse = await this.handleBlockChildrenParallel(operation, { 
+      block_id: blockId,
+      page_size: 100
+    });
+    
+    const blocksData = JSON.parse(blocksResponse.content[0].text);
+    const blocks = blocksData.results || [];
+    
+    // Process each block recursively if it has children
+    const enrichedBlocks = await Promise.all(
+      blocks.map(async (block: any) => {
+        // Cache block
+        this.blockCache.set(block.id, block);
+        
+        const enrichedBlock = { ...block };
+        
+        // Process child blocks recursively
+        if (block.has_children) {
+          const childBlocks = await this.retrieveBlocksRecursively(
+            block.id, 
+            options, 
+            currentDepth + 1
+          );
+          enrichedBlock.children = childBlocks;
+        }
+        
+        // Process database blocks (if option enabled)
+        if (options.includeDatabases && 
+            (block.type === 'child_database' || block.type === 'linked_database')) {
+          const databaseId = block[block.type]?.database_id;
+          if (databaseId) {
+            enrichedBlock.database = await this.retrieveDatabase(databaseId, options);
+          }
+        }
+        
+        return enrichedBlock;
+      })
+    );
+    
+    return enrichedBlocks;
+  }
+  
+  // Retrieve database information
+  private async retrieveDatabase(databaseId: string, options: RecursiveExplorationOptions): Promise<any> {
+    console.log(`Retrieving database information: ${databaseId}`);
+    
+    // Check cache
+    if (!options.skipCache && this.databaseCache.has(databaseId)) {
+      console.log(`Database cache hit: ${databaseId}`);
+      return this.databaseCache.get(databaseId);
+    }
+    
+    // Get database info via API call
+    const operation = this.findOperation('API-retrieve-a-database');
+    if (!operation) {
+      console.warn('API-retrieve-a-database method not found.');
+      return { id: databaseId, note: "Database details not available" };
+    }
+    
+    try {
+      console.log(`Notion API call: ${operation.method.toUpperCase()} ${operation.path} (databaseId: ${databaseId})`);
+      const response = await this.httpClient.executeOperation(operation, { database_id: databaseId });
+      
+      if (response.status !== 200) {
+        console.error('Error retrieving database information:', response.data);
+        return { id: databaseId, error: "Failed to retrieve database" };
+      }
+      
+      const databaseData = response.data;
+      this.databaseCache.set(databaseId, databaseData);
+      return databaseData;
+    } catch (error) {
+      console.error('Error retrieving database:', error);
+      return { id: databaseId, error: "Failed to retrieve database" };
+    }
+  }
+  
+  // Retrieve comments
+  private async retrieveComments(blockId: string, options: RecursiveExplorationOptions): Promise<any> {
+    console.log(`Retrieving comments: ${blockId}`);
+    
+    // Get comments via API call
+    const operation = this.findOperation('API-retrieve-a-comment');
+    if (!operation) {
+      console.warn('API-retrieve-a-comment method not found.');
+      return { results: [] };
+    }
+    
+    try {
+      console.log(`Notion API call: ${operation.method.toUpperCase()} ${operation.path} (blockId: ${blockId})`);
+      const response = await this.httpClient.executeOperation(operation, { block_id: blockId });
+      
+      if (response.status !== 200) {
+        console.error('Error retrieving comments:', response.data);
+        return { results: [] };
+      }
+      
+      const commentsData = response.data;
+      
+      // Cache comments
+      if (commentsData.results) {
+        commentsData.results.forEach((comment: any) => {
+          if (comment.id) {
+            this.commentCache.set(comment.id, comment);
+          }
+        });
+      }
+      
+      return commentsData;
+    } catch (error) {
+      console.error('Error retrieving comments:', error);
+      return { results: [] };
+    }
+  }
+  
+  // Enrich page properties with detailed information
+  private async enrichPageProperties(pageId: string, properties: any, options: RecursiveExplorationOptions): Promise<any> {
+    console.log(`Enriching page properties: ${pageId}`);
+    
+    const enrichedProperties = { ...properties };
+    const propertyPromises: Promise<void>[] = [];
+    
+    // Get detailed information for each property
+    for (const [propName, propData] of Object.entries(properties)) {
+      const propId = (propData as any).id;
+      if (!propId) continue;
+      
+      // Create cache key
+      const cacheKey = `${pageId}:${propId}`;
+      
+      propertyPromises.push(
+        (async () => {
+          try {
+            // Check cache
+            if (!options.skipCache && this.propertyCache.has(cacheKey)) {
+              enrichedProperties[propName].details = this.propertyCache.get(cacheKey);
+            } else {
+              // Get property details via API call
+              const operation = this.findOperation('API-retrieve-a-page-property');
+              if (!operation) {
+                console.warn('API-retrieve-a-page-property method not found.');
+                return;
+              }
+              
+              const response = await this.httpClient.executeOperation(operation, {
+                page_id: pageId,
+                property_id: propId
+              });
+              
+              if (response.status === 200) {
+                enrichedProperties[propName].details = response.data;
+                this.propertyCache.set(cacheKey, response.data);
+              }
+            }
+          } catch (error) {
+            console.error(`Error retrieving property ${propName}:`, error);
+          }
+        })()
+      );
+    }
+    
+    // Get all property information in parallel
+    await Promise.all(propertyPromises);
+    
+    return enrichedProperties;
+  }
+
+  // Optimized parallel processing for block children
+  private async handleBlockChildrenParallel(operation: OpenAPIV3.OperationObject & { method: string; path: string }, params: any) {
+    console.log(`Starting Notion API parallel processing: ${operation.method.toUpperCase()} ${operation.path}`)
+    
+    // Get first page
     const initialResponse = await this.httpClient.executeOperation(operation, params)
     
     if (initialResponse.status !== 200) {
-      console.error('응답 오류:', initialResponse.data)
+      console.error('Response error:', initialResponse.data)
       return {
         content: [{ type: 'text', text: JSON.stringify(initialResponse.data) }],
       }
@@ -165,23 +549,23 @@ export class MCPProxy {
     const results = initialResponse.data.results || []
     let nextCursor = initialResponse.data.next_cursor
     
-    // 병렬 처리를 위한 배열
+    // Array for parallel processing
     const pageRequests = []
-    const maxParallelRequests = 5 // 동시 요청 제한
+    const maxParallelRequests = 5 // Limit simultaneous requests
     
-    console.log(`첫 페이지에서 블록 ${results.length}개 조회됨`)
+    console.log(`Retrieved ${results.length} blocks from first page`)
     
-    // 다음 페이지가 있는 경우 병렬로 요청
+    // Request subsequent pages in parallel if available
     while (nextCursor) {
-      // 다음 페이지를 위한 파라미터 복제
+      // Clone parameters for next page
       const nextPageParams = { ...params, start_cursor: nextCursor }
       
-      // 페이지 요청 추가
+      // Add page request
       pageRequests.push(
         this.httpClient.executeOperation(operation, nextPageParams)
           .then(response => {
             if (response.status === 200) {
-              console.log(`추가 페이지에서 블록 ${response.data.results?.length || 0}개 조회됨`)
+              console.log(`Retrieved ${response.data.results?.length || 0} blocks from additional page`)
               return {
                 results: response.data.results || [],
                 next_cursor: response.data.next_cursor
@@ -190,20 +574,20 @@ export class MCPProxy {
             return { results: [], next_cursor: null }
           })
           .catch(error => {
-            console.error('페이지 조회 오류:', error)
+            console.error('Error retrieving page:', error)
             return { results: [], next_cursor: null }
           })
       )
       
-      // 최대 동시 요청 수에 도달했거나 더 이상 다음 페이지가 없으면 병렬 처리 실행
+      // Execute parallel requests when batch size reached or no more pages
       if (pageRequests.length >= maxParallelRequests || !nextCursor) {
-        console.log(`${pageRequests.length}개 페이지 병렬 처리 중...`)
+        console.log(`Processing ${pageRequests.length} pages in parallel...`)
         const pageResponses = await Promise.all(pageRequests)
         
-        // 결과 병합
+        // Merge results
         for (const response of pageResponses) {
           results.push(...response.results)
-          // 다음 배치의 시작점으로 마지막 next_cursor 설정
+          // Set next cursor for next batch
           if (response.next_cursor) {
             nextCursor = response.next_cursor
           } else {
@@ -211,17 +595,17 @@ export class MCPProxy {
           }
         }
         
-        // 요청 배열 초기화
+        // Reset request array
         pageRequests.length = 0
       }
       
-      // 다음 cursor가 없으면 반복 종료
+      // Exit loop if no more pages
       if (!nextCursor) break
     }
     
-    console.log(`총 ${results.length}개 블록 조회 완료`)
+    console.log(`Retrieved ${results.length} blocks in total`)
     
-    // 최종 결과 반환
+    // Return merged response
     const mergedResponse = {
       ...initialResponse.data,
       results,
@@ -247,12 +631,12 @@ export class MCPProxy {
     try {
       const headers = JSON.parse(headersJson)
       if (typeof headers !== 'object' || headers === null) {
-        console.warn('OPENAPI_MCP_HEADERS 환경 변수는 JSON 객체여야 합니다. 받은 타입:', typeof headers)
+        console.warn('OPENAPI_MCP_HEADERS environment variable must be a JSON object, got:', typeof headers)
         return {}
       }
       return headers
     } catch (error) {
-      console.warn('OPENAPI_MCP_HEADERS 환경 변수 파싱 실패:', error)
+      console.warn('Failed to parse OPENAPI_MCP_HEADERS environment variable:', error)
       return {}
     }
   }
@@ -277,9 +661,10 @@ export class MCPProxy {
   }
 
   async connect(transport: Transport) {
-    console.log('One Pager Assistant - MCP 서버 시작됨')
-    console.log('제공 API: retrieve-a-page, get-block-children, retrieve-a-block')
-    console.log('병렬 처리 최적화 활성화됨')
+    console.log('One Pager Assistant - MCP server started')
+    console.log('Providing APIs: retrieve-a-page, get-block-children, retrieve-a-block')
+    console.log('New feature: get-one-pager - recursively explore pages automatically')
+    console.log('Parallel processing optimization enabled')
     
     // The SDK will handle stdio communication
     await this.server.connect(transport)

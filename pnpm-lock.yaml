@@ -14,9 +14,6 @@ importers:
       axios:
         specifier: ^1.8.4
         version: 1.9.0
-      express:
-        specifier: ^4.21.2
-        version: 4.21.2
       form-data:
         specifier: ^4.0.1
         version: 4.0.2
@@ -63,9 +60,15 @@ importers:
       '@vitest/coverage-v8':
         specifier: 3.1.1
         version: 3.1.1(vitest@3.1.2(@types/node@20.17.32)(tsx@4.19.3))
+      body-parser:
+        specifier: ^2.2.0
+        version: 2.2.0
       esbuild:
         specifier: ^0.25.2
         version: 0.25.3
+      express:
+        specifier: ^4.21.2
+        version: 4.21.2
       multer:
         specifier: 1.4.5-lts.1
         version: 1.4.5-lts.1
