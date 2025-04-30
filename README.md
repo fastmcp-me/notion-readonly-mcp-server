@@ -17,13 +17,13 @@ This project implements an optimized read-only MCP server for the Notion API, fo
 
 Go to https://www.notion.so/profile/integrations and create a new **internal** integration or select an existing one.
 
-![Creating a Notion Integration token](notion-integration.png)
+![Creating a Notion Integration token](integration-creation.png)
 
 While we limit the scope of Notion API's exposed to read-only operations, there is a non-zero risk to workspace data by exposing it to LLMs. Security-conscious users may want to further configure the Integration's _Capabilities_.
 
 For example, you can create a read-only integration token by giving only "Read content" access from the "Configuration" tab:
 
-![Notion Integration Token Capabilities showing Read content checked](notion-capabilities.png)
+![Notion Integration Token Capabilities showing Read content checked](integrations-capabilities.png)
 
 ### 2. Adding MCP config to your client:
 
@@ -77,7 +77,7 @@ Ensure relevant pages and databases are connected to your integration.
 
 To do this, visit the page, click on the 3 dots, and select "Connect to integration".
 
-![Adding Integration Token to Notion Connections](notion-connections.png)
+![Adding Integration Token to Notion Connections](connections.png)
 
 ## Available Tools
 
