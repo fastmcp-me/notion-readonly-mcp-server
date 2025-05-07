@@ -1,6 +1,6 @@
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import path from 'node:path'
 import { fileURLToPath } from 'url'
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 
 import { initProxy, ValidationError } from '../src/init-server'
 

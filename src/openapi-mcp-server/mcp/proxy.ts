@@ -348,7 +348,9 @@ export class MCPProxy {
 
   // One Pager request handler
   private async handleOnePagerRequest(params: any) {
-    console.log('Starting One Pager request processing:', params.page_id);
+    if (params.runInBackground !== false) {
+      console.log('Starting One Pager request processing:', params.page_id);
+    }
     
     const options: RecursiveExplorationOptions = {
       maxDepth: params.maxDepth || 5,
@@ -362,7 +364,9 @@ export class MCPProxy {
       runInBackground: params.runInBackground !== false,
     };
     
-    console.log('Exploration options:', JSON.stringify(options, null, 2));
+    if (options.runInBackground) {
+      console.log('Exploration options:', JSON.stringify(options, null, 2));
+    }
     
     try {
       const startTime = Date.now();
@@ -399,7 +403,9 @@ export class MCPProxy {
       const pageData = await this.retrievePageRecursively(params.page_id, options);
       
       const duration = Date.now() - startTime;
-      console.log(`One Pager completed in ${duration}ms for page ${params.page_id}`);
+      if (options.runInBackground) {
+        console.log(`One Pager completed in ${duration}ms for page ${params.page_id}`);
+      }
       
       return {
         content: [
@@ -422,7 +428,9 @@ export class MCPProxy {
         ],
       };
     } catch (error) {
-      console.error('Error in One Pager request:', error);
+      if (options.runInBackground) {
+        console.error('Error in One Pager request:', error);
+      }
       const errorResponse = {
         status: 'error',
         message: error instanceof Error ? error.message : String(error),
@@ -549,7 +557,9 @@ export class MCPProxy {
         }
         
         if (response.status !== 200) {
-          console.error('Error retrieving page information:', response.data);
+          if (options.runInBackground) {
+            console.error('Error retrieving page information:', response.data);
+          }
           return { 
             id: pageId,
             error: "Failed to retrieve page", 
@@ -617,7 +627,9 @@ export class MCPProxy {
       return enrichedPageData;
     } catch (error) {
       if (error instanceof Error && error.message.includes('timed out')) {
-        console.error(`Timeout occurred while processing page ${pageId} at depth ${currentDepth}`);
+        if (options.runInBackground) {
+          console.error(`Timeout occurred while processing page ${pageId} at depth ${currentDepth}`);
+        }
         return { 
           id: pageId, 
           error: "Operation timed out", 
@@ -626,7 +638,9 @@ export class MCPProxy {
         };
       }
       
-      console.error(`Error in retrievePageRecursively for page ${pageId}:`, error);
+      if (options.runInBackground) {
+        console.error(`Error in retrievePageRecursively for page ${pageId}:`, error);
+      }
       return { 
         id: pageId, 
         error: error instanceof Error ? error.message : String(error),
@@ -831,45 +845,65 @@ export class MCPProxy {
   
   // Retrieve comments
   private async retrieveComments(blockId: string, options: RecursiveExplorationOptions): Promise<any> {
-    console.log(`Retrieving comments: ${blockId}`);
+    if (options.runInBackground) {
+      console.log(`Retrieving comments: ${blockId}`);
+    }
     
     // Get comments via API call
     const operation = this.findOperation('API-retrieve-a-comment');
     if (!operation) {
-      console.warn('API-retrieve-a-comment method not found.');
-      return { results: [] };
+      if (options.runInBackground) {
+        console.warn('API-retrieve-a-comment method not found.');
+      }
+      return Promise.resolve({ results: [] });
     }
     
     try {
-      console.log(`Notion API call: ${operation.method.toUpperCase()} ${operation.path} (blockId: ${blockId})`);
-      const response = await this.httpClient.executeOperation(operation, { block_id: blockId });
-      
-      if (response.status !== 200) {
-        console.error('Error retrieving comments:', response.data);
-        return { results: [] };
+      if (options.runInBackground) {
+        console.log(`Notion API call: ${operation.method.toUpperCase()} ${operation.path} (blockId: ${blockId})`);
       }
       
-      const commentsData = response.data;
-      
-      // Cache comments
-      if (commentsData.results) {
-        commentsData.results.forEach((comment: any) => {
-          if (comment.id) {
-            this.commentCache.set(comment.id, comment);
+      return this.httpClient.executeOperation(operation, { block_id: blockId })
+        .then(response => {
+          if (response.status !== 200) {
+            if (options.runInBackground) {
+              console.error('Error retrieving comments:', response.data);
+            }
+            return { results: [] };
           }
+          
+          const commentsData = response.data;
+          
+          // Cache comments
+          if (commentsData.results) {
+            commentsData.results.forEach((comment: any) => {
+              if (comment.id) {
+                this.commentCache.set(comment.id, comment);
+              }
+            });
+          }
+          
+          return commentsData;
+        })
+        .catch(error => {
+          if (options.runInBackground) {
+            console.error('Error retrieving comments:', error);
+          }
+          return { results: [] };
         });
-      }
-      
-      return commentsData;
     } catch (error) {
-      console.error('Error retrieving comments:', error);
-      return { results: [] };
+      if (options.runInBackground) {
+        console.error('Error retrieving comments:', error);
+      }
+      return Promise.resolve({ results: [] });
     }
   }
   
   // Enrich page properties with detailed information
   private async enrichPageProperties(pageId: string, properties: any, options: RecursiveExplorationOptions): Promise<any> {
-    console.log(`Enriching page properties: ${pageId}`);
+    if (options.runInBackground) {
+      console.log(`Enriching page properties: ${pageId}`);
+    }
     
     const enrichedProperties = { ...properties };
     const propertyPromises: Promise<void>[] = [];
@@ -891,7 +925,9 @@ export class MCPProxy {
             } else {
               // Skip properties with URLs that contain special characters like notion://
               if (propId.includes('notion://') || propId.includes('%3A%2F%2F')) {
-                console.warn(`Skipping property with special URL format: ${propName} (${propId})`);
+                if (options.runInBackground) {
+                  console.warn(`Skipping property with special URL format: ${propName} (${propId})`);
+                }
                 enrichedProperties[propName].details = { 
                   object: 'property_item', 
                   type: 'unsupported',
@@ -903,7 +939,9 @@ export class MCPProxy {
               // Get property details via API call
               const operation = this.findOperation('API-retrieve-a-page-property');
               if (!operation) {
-                console.warn('API-retrieve-a-page-property method not found.');
+                if (options.runInBackground) {
+                  console.warn('API-retrieve-a-page-property method not found.');
+                }
                 return;
               }
               
@@ -911,7 +949,9 @@ export class MCPProxy {
                 page_id: pageId,
                 property_id: propId
               }).catch(error => {
-                console.warn(`Error retrieving property ${propName} (${propId}): ${error.message}`);
+                if (options.runInBackground) {
+                  console.warn(`Error retrieving property ${propName} (${propId}): ${error.message}`);
+                }
                 return { 
                   status: error.status || 500,
                   data: { 
@@ -934,7 +974,9 @@ export class MCPProxy {
               }
             }
           } catch (error) {
-            console.error(`Error retrieving property ${propName}:`, error);
+            if (options.runInBackground) {
+              console.error(`Error retrieving property ${propName}:`, error);
+            }
             enrichedProperties[propName].details = { 
               object: 'property_item', 
               type: 'error',
@@ -965,7 +1007,9 @@ export class MCPProxy {
     const initialResponse = await this.httpClient.executeOperation(operation, params);
     
     if (initialResponse.status !== 200) {
-      console.error('Response error:', initialResponse.data);
+      if (options?.runInBackground) {
+        console.error('Response error:', initialResponse.data);
+      }
       return {
         content: [{ type: 'text', text: JSON.stringify(initialResponse.data) }],
       };
@@ -1003,7 +1047,9 @@ export class MCPProxy {
             return { results: [], next_cursor: null };
           })
           .catch(error => {
-            console.error('Error retrieving page:', error);
+            if (options?.runInBackground) {
+              console.error('Error retrieving page:', error);
+            }
             return { results: [], next_cursor: null };
           })
       );
