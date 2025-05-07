@@ -2,6 +2,10 @@
 
 This project implements an optimized read-only MCP server for the Notion API, focusing on performance and efficiency for AI assistants to query and retrieve Notion content.
 
+<a href="https://glama.ai/mcp/servers/@Taewoong1378/notion-readonly-mcp-server">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/@Taewoong1378/notion-readonly-mcp-server/badge" alt="Notion ReadOnly Server MCP server" />
+</a>
+
 ## Key Improvements
 
 - **Read-Only Design**: Focused exclusively on data retrieval operations, ensuring safe access to Notion content.
